@@ -1,0 +1,465 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+
+<a href="../scratch/dylan.html">Back to Scratch Page</a>
+
+  <meta charset="UTF-8"/>
+  <meta name="viewport" content="width=device-width, initial-scale=1.0"/>
+  <title>BYU Bird</title>
+  <link href="https://fonts.googleapis.com/css2?family=Bebas+Neue&family=Nunito:wght@400;700;800&display=swap" rel="stylesheet">
+  <style>
+    *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+
+    body {
+      background: #002147;
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      justify-content: center;
+      min-height: 100vh;
+      font-family: 'Nunito', sans-serif;
+      overflow: hidden;
+    }
+
+    h1 {
+      font-family: 'Bebas Neue', sans-serif;
+      font-size: 2.2rem;
+      color: #ffffff;
+      letter-spacing: 3px;
+      margin-bottom: 10px;
+      text-shadow: 0 2px 8px rgba(0,0,0,0.4);
+    }
+
+    h1 span { color: #c8a415; }
+
+    #game-container {
+      position: relative;
+      border: 3px solid #c8a415;
+      border-radius: 12px;
+      overflow: hidden;
+      box-shadow: 0 0 40px rgba(200,164,21,0.25), 0 8px 40px rgba(0,0,0,0.5);
+    }
+
+    canvas { display: block; }
+
+    #score-bar {
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      width: 100%;
+      max-width: 400px;
+      margin-top: 10px;
+      padding: 0 4px;
+    }
+
+    .score-label {
+      font-size: 13px;
+      color: rgba(255,255,255,0.5);
+      text-transform: uppercase;
+      letter-spacing: 1px;
+    }
+
+    .score-val {
+      font-size: 22px;
+      font-weight: 800;
+      color: #c8a415;
+    }
+
+    #instructions {
+      margin-top: 8px;
+      font-size: 12px;
+      color: rgba(255,255,255,0.35);
+      letter-spacing: 0.5px;
+    }
+  </style>
+</head>
+<body>
+
+<h1>BYU <span>Bird</span></h1>
+
+<div id="game-container">
+  <canvas id="c" width="400" height="550"></canvas>
+</div>
+
+<div id="score-bar">
+  <div><div class="score-label">Score</div><div class="score-val" id="score">0</div></div>
+  <div style="text-align:right"><div class="score-label">Best</div><div class="score-val" id="best">0</div></div>
+</div>
+
+<div id="instructions">SPACE / TAP to flap</div>
+
+<script>
+const canvas = document.getElementById('c');
+const ctx = canvas.getContext('2d');
+const W = canvas.width, H = canvas.height;
+
+// ── Colours (BYU palette) ──────────────────────────────
+const NAVY   = '#002147';
+const ROYAL  = '#0062b8';
+const GOLD   = '#c8a415';
+const WHITE  = '#ffffff';
+const SKY1   = '#0a3260';
+const SKY2   = '#001830';
+const PIPE_G = '#1a5e2a';
+const PIPE_D = '#0f3d1a';
+
+// ── Game state ─────────────────────────────────────────
+let bird, pipes, frame, score, best, state, particles;
+best = 0;
+
+const GRAVITY   = 0.38;
+const FLAP      = -7.2;
+const PIPE_W    = 52;
+const GAP       = 145;
+const PIPE_SPD  = 2.4;
+const PIPE_INT  = 90;  // frames between pipes
+
+// ── Stars ──────────────────────────────────────────────
+const stars = Array.from({length: 60}, () => ({
+  x: Math.random() * W,
+  y: Math.random() * H * 0.7,
+  r: Math.random() * 1.5 + 0.3,
+  a: Math.random(),
+}));
+
+function init() {
+  bird = { x: 90, y: H / 2, vy: 0, angle: 0, wing: 0, wingDir: 1 };
+  pipes = [];
+  particles = [];
+  frame = 0;
+  score = 0;
+  document.getElementById('score').textContent = '0';
+  state = 'idle'; // idle | playing | dead
+}
+
+// ── Drawing helpers ────────────────────────────────────
+
+function drawBg() {
+  // Sky gradient
+  const grad = ctx.createLinearGradient(0, 0, 0, H);
+  grad.addColorStop(0, SKY2);
+  grad.addColorStop(0.6, SKY1);
+  grad.addColorStop(1, '#1a3a1a');
+  ctx.fillStyle = grad;
+  ctx.fillRect(0, 0, W, H);
+
+  // Stars
+  stars.forEach(s => {
+    ctx.globalAlpha = s.a * 0.8;
+    ctx.fillStyle = WHITE;
+    ctx.beginPath();
+    ctx.arc(s.x, s.y, s.r, 0, Math.PI * 2);
+    ctx.fill();
+  });
+  ctx.globalAlpha = 1;
+
+  // Ground
+  ctx.fillStyle = '#2a5c2a';
+  ctx.fillRect(0, H - 60, W, 60);
+  ctx.fillStyle = '#1a3d1a';
+  ctx.fillRect(0, H - 60, W, 8);
+
+  // Ground stripes
+  ctx.fillStyle = '#3a7c3a';
+  for (let x = (frame * 1.5) % 40 - 40; x < W; x += 40) {
+    ctx.fillRect(x, H - 52, 20, 44);
+  }
+}
+
+function drawPipe(x, topH) {
+  const r = 6;
+  const capH = 16, capW = PIPE_W + 10, capX = x - 5;
+
+  // Bottom pipe
+  const botY = topH + GAP;
+  const botH = H - 60 - botY;
+
+  [
+    [x, 0, PIPE_W, topH],
+    [x, botY, PIPE_W, botH],
+  ].forEach(([px, py, pw, ph], i) => {
+    // Main body
+    const pg = ctx.createLinearGradient(px, 0, px + pw, 0);
+    pg.addColorStop(0, PIPE_D);
+    pg.addColorStop(0.4, PIPE_G);
+    pg.addColorStop(1, PIPE_D);
+    ctx.fillStyle = pg;
+    ctx.beginPath();
+    ctx.roundRect(px, py, pw, ph, i === 0 ? [0,0,r,r] : [r,r,0,0]);
+    ctx.fill();
+
+    // Cap
+    const capY = i === 0 ? topH - capH : botY;
+    const cg = ctx.createLinearGradient(capX, 0, capX + capW, 0);
+    cg.addColorStop(0, '#0c3015');
+    cg.addColorStop(0.4, '#1d6e2e');
+    cg.addColorStop(1, '#0c3015');
+    ctx.fillStyle = cg;
+    ctx.beginPath();
+    ctx.roundRect(capX, capY, capW, capH, r);
+    ctx.fill();
+
+    // Gold stripe on cap
+    ctx.fillStyle = GOLD;
+    ctx.fillRect(capX + 4, capY + capH - 3, capW - 8, 2);
+  });
+}
+
+function drawBird() {
+  ctx.save();
+  ctx.translate(bird.x, bird.y);
+  ctx.rotate(Math.max(-0.5, Math.min(Math.PI / 3, bird.angle)));
+
+  // Body (Y-shaped BYU bird approximation — cute oval)
+  // Shadow
+  ctx.fillStyle = 'rgba(0,0,0,0.15)';
+  ctx.beginPath();
+  ctx.ellipse(2, 2, 20, 16, 0, 0, Math.PI * 2);
+  ctx.fill();
+
+  // Body
+  const bg = ctx.createRadialGradient(-4, -4, 2, 0, 0, 20);
+  bg.addColorStop(0, '#ffffff');
+  bg.addColorStop(0.5, '#d0e4ff');
+  bg.addColorStop(1, ROYAL);
+  ctx.fillStyle = bg;
+  ctx.beginPath();
+  ctx.ellipse(0, 0, 20, 16, 0, 0, Math.PI * 2);
+  ctx.fill();
+
+  // Navy chest stripe
+  ctx.fillStyle = NAVY;
+  ctx.beginPath();
+  ctx.ellipse(4, 4, 10, 8, 0.3, 0, Math.PI * 2);
+  ctx.fill();
+
+  // Wing (flapping)
+  const wingY = Math.sin(bird.wing) * 5;
+  ctx.fillStyle = ROYAL;
+  ctx.beginPath();
+  ctx.ellipse(-4, wingY, 14, 7, -0.3, 0, Math.PI * 2);
+  ctx.fill();
+  ctx.fillStyle = '#4a90d9';
+  ctx.beginPath();
+  ctx.ellipse(-5, wingY - 1, 10, 4, -0.3, 0, Math.PI * 2);
+  ctx.fill();
+
+  // Gold beak
+  ctx.fillStyle = GOLD;
+  ctx.beginPath();
+  ctx.moveTo(18, -3);
+  ctx.lineTo(26, 0);
+  ctx.lineTo(18, 4);
+  ctx.closePath();
+  ctx.fill();
+
+  // Eye
+  ctx.fillStyle = WHITE;
+  ctx.beginPath();
+  ctx.arc(10, -5, 5, 0, Math.PI * 2);
+  ctx.fill();
+  ctx.fillStyle = '#111';
+  ctx.beginPath();
+  ctx.arc(11, -5, 3, 0, Math.PI * 2);
+  ctx.fill();
+  ctx.fillStyle = WHITE;
+  ctx.beginPath();
+  ctx.arc(12, -6, 1, 0, Math.PI * 2);
+  ctx.fill();
+
+  // Y logo on body
+  ctx.fillStyle = GOLD;
+  ctx.font = 'bold 11px Bebas Neue, sans-serif';
+  ctx.textAlign = 'center';
+  ctx.fillText('Y', -2, 3);
+
+  ctx.restore();
+}
+
+function drawParticles() {
+  particles.forEach(p => {
+    ctx.globalAlpha = p.life;
+    ctx.fillStyle = p.color;
+    ctx.beginPath();
+    ctx.arc(p.x, p.y, p.r, 0, Math.PI * 2);
+    ctx.fill();
+  });
+  ctx.globalAlpha = 1;
+}
+
+function spawnParticles(x, y) {
+  for (let i = 0; i < 14; i++) {
+    const angle = Math.random() * Math.PI * 2;
+    const speed = Math.random() * 4 + 1;
+    particles.push({
+      x, y,
+      vx: Math.cos(angle) * speed,
+      vy: Math.sin(angle) * speed,
+      r: Math.random() * 5 + 2,
+      life: 1,
+      color: [GOLD, WHITE, ROYAL][Math.floor(Math.random() * 3)],
+    });
+  }
+}
+
+function drawOverlay() {
+  if (state === 'idle') {
+    ctx.fillStyle = 'rgba(0,21,47,0.65)';
+    ctx.fillRect(0, 0, W, H);
+
+    ctx.fillStyle = GOLD;
+    ctx.font = `bold 36px 'Bebas Neue', sans-serif`;
+    ctx.textAlign = 'center';
+    ctx.fillText('BYU BIRD', W / 2, H / 2 - 40);
+
+    ctx.fillStyle = WHITE;
+    ctx.font = `16px 'Nunito', sans-serif`;
+    ctx.fillText('Press SPACE or tap to start', W / 2, H / 2 + 10);
+
+    ctx.fillStyle = 'rgba(200,164,21,0.6)';
+    ctx.font = `13px 'Nunito', sans-serif`;
+    ctx.fillText('Avoid the pipes. Go Cougars!', W / 2, H / 2 + 38);
+  }
+
+  if (state === 'dead') {
+    ctx.fillStyle = 'rgba(0,21,47,0.72)';
+    ctx.fillRect(0, 0, W, H);
+
+    ctx.fillStyle = '#e05050';
+    ctx.font = `bold 40px 'Bebas Neue', sans-serif`;
+    ctx.textAlign = 'center';
+    ctx.fillText('OH NO!', W / 2, H / 2 - 60);
+
+    ctx.fillStyle = WHITE;
+    ctx.font = `bold 22px 'Nunito', sans-serif`;
+    ctx.fillText(`Score: ${score}`, W / 2, H / 2 - 20);
+
+    if (score >= best) {
+      ctx.fillStyle = GOLD;
+      ctx.font = `bold 16px 'Nunito', sans-serif`;
+      ctx.fillText('NEW BEST!', W / 2, H / 2 + 12);
+    }
+
+    ctx.fillStyle = 'rgba(255,255,255,0.7)';
+    ctx.font = `14px 'Nunito', sans-serif`;
+    ctx.fillText('Press SPACE or tap to retry', W / 2, H / 2 + 46);
+
+    ctx.font = `13px 'Nunito', sans-serif`;
+    ctx.fillStyle = 'rgba(200,164,21,0.7)';
+    ctx.fillText('Go Cougars! 💪', W / 2, H / 2 + 70);
+  }
+}
+
+// ── Collision ──────────────────────────────────────────
+function checkCollision() {
+  if (bird.y + 14 >= H - 60) return true;
+  if (bird.y - 14 <= 0) return true;
+  for (const p of pipes) {
+    if (
+      bird.x + 14 > p.x + 4 &&
+      bird.x - 14 < p.x + PIPE_W - 4 &&
+      (bird.y - 12 < p.topH || bird.y + 12 > p.topH + GAP)
+    ) return true;
+  }
+  return false;
+}
+
+// ── Main loop ──────────────────────────────────────────
+function loop() {
+  requestAnimationFrame(loop);
+  frame++;
+
+  drawBg();
+
+  // Twinkle stars
+  stars.forEach(s => { s.a = 0.3 + 0.7 * Math.abs(Math.sin(frame * 0.01 + s.x)); });
+
+  if (state === 'playing') {
+    // Bird physics
+    bird.vy += GRAVITY;
+    bird.y += bird.vy;
+    bird.angle = bird.vy * 0.06;
+
+    // Wing flap
+    bird.wing += 0.25 * bird.wingDir;
+    if (Math.abs(bird.wing) > 1) bird.wingDir *= -1;
+
+    // Spawn pipes
+    if (frame % PIPE_INT === 0) {
+      const topH = 60 + Math.random() * (H - 60 - GAP - 100);
+      pipes.push({ x: W, topH, scored: false });
+    }
+
+    // Move pipes & score
+    pipes.forEach(p => {
+      p.x -= PIPE_SPD;
+      if (!p.scored && p.x + PIPE_W < bird.x) {
+        p.scored = true;
+        score++;
+        document.getElementById('score').textContent = score;
+        if (score > best) {
+          best = score;
+          document.getElementById('best').textContent = best;
+        }
+      }
+    });
+    pipes = pipes.filter(p => p.x + PIPE_W > 0);
+
+    // Particles
+    particles.forEach(p => {
+      p.x += p.vx; p.y += p.vy;
+      p.vy += 0.1;
+      p.life -= 0.04;
+    });
+    particles = particles.filter(p => p.life > 0);
+
+    if (checkCollision()) {
+      spawnParticles(bird.x, bird.y);
+      state = 'dead';
+    }
+  } else if (state === 'idle') {
+    // Idle float
+    bird.y = H / 2 + Math.sin(frame * 0.05) * 8;
+    bird.wing += 0.15;
+    bird.angle = Math.sin(frame * 0.05) * 0.1;
+  } else if (state === 'dead') {
+    bird.vy += GRAVITY;
+    bird.y += bird.vy;
+    bird.angle = Math.PI / 2;
+    particles.forEach(p => {
+      p.x += p.vx; p.y += p.vy;
+      p.vy += 0.1;
+      p.life -= 0.04;
+    });
+    particles = particles.filter(p => p.life > 0);
+  }
+
+  // Draw pipes
+  pipes.forEach(p => drawPipe(p.x, p.topH));
+
+  drawParticles();
+  drawBird();
+  drawOverlay();
+}
+
+// ── Input ──────────────────────────────────────────────
+function flap() {
+  if (state === 'idle') { state = 'playing'; }
+  else if (state === 'dead') { init(); state = 'playing'; }
+  if (state === 'playing') {
+    bird.vy = FLAP;
+    bird.wingDir = 1;
+    bird.wing = 0;
+  }
+}
+
+document.addEventListener('keydown', e => { if (e.code === 'Space') { e.preventDefault(); flap(); } });
+canvas.addEventListener('click', flap);
+canvas.addEventListener('touchstart', e => { e.preventDefault(); flap(); }, { passive: false });
+
+init();
+loop();
+</script>
+</body>
+</html>
